@@ -17,7 +17,7 @@ the same UI is driven by a real model with cloud transcription and voice.
 ```bash
 # core
 cd backend
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # or: pip install -r requirements.txt
 .venv/bin/python -m jarvis            # http://127.0.0.1:8000
 
 # hologram
