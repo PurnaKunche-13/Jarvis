@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from jarvis.app import create_app
@@ -12,6 +14,7 @@ def test_healthz_and_config() -> None:
         assert config["wake_word"] == "jarvis"
         assert config["cloud_enabled"] is False
         assert config["server_stt"] is False
+        assert "set_timer" in config["tools"] and "web_search" in config["tools"]
 
 
 def test_websocket_turn_without_api_key() -> None:
@@ -28,10 +31,33 @@ def test_websocket_turn_without_api_key() -> None:
         while True:
             event = socket.receive_json()
             events.append(event)
-            if event["type"] == "state" and event["value"] == "idle":
+            if event["type"] == "reply_end":
                 break
-        reply = next(event for event in events if event["type"] == "reply_end")
-        assert reply["text"] == "42"
+        assert events[-1]["text"] == "42"
+        # The browser speaks, so the client owns the return to idle.
+        assert events[-1]["speak"] is True
 
         socket.send_json({"type": "bogus"})
-        assert socket.receive_json()["type"] == "error"
+        seen: list[str] = []
+        while "error" not in seen:
+            seen.append(socket.receive_json()["type"])
+
+
+def test_websocket_rejects_foreign_origin() -> None:
+    client = TestClient(create_app())
+    headers = {"origin": "https://evil.example"}
+    with (
+        client,
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect("/ws", headers=headers) as socket,
+    ):
+        socket.receive_json()
+
+
+def test_websocket_survives_malformed_frame() -> None:
+    with TestClient(create_app()) as client, client.websocket_connect("/ws") as socket:
+        socket.receive_json()
+        socket.send_text("not json")
+        assert socket.receive_json() == {"type": "error", "message": "Malformed frame."}
+        socket.send_json({"type": "ping"})
+        assert socket.receive_json() == {"type": "pong"}

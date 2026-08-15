@@ -13,6 +13,7 @@ from .registry import Runtime
 from .schemas import (
     ServerAudio,
     ServerError,
+    ServerNotice,
     ServerReplyEnd,
     ServerState,
     ServerToken,
@@ -33,6 +34,7 @@ class Session:
         self._runtime = runtime
         self._emit = emit
         self._history: list[ChatMessage] = []
+        self._tools, self._timers = runtime.build_tools(self.notify)
 
     @property
     def history(self) -> list[ChatMessage]:
@@ -40,6 +42,18 @@ class Session:
 
     def reset(self) -> None:
         self._history.clear()
+
+    async def aclose(self) -> None:
+        """Drop pending timers when the client goes away."""
+        await self._timers.aclose()
+
+    async def notify(self, text: str) -> None:
+        """Push an unsolicited line (a fired timer) and speak it if we can."""
+        audio = await self._speak(text)
+        await self._emit(ServerNotice(text=text, speak=audio is None))
+        await self._emit(ServerState(value="speaking"))
+        if audio is not None:
+            await self._emit(audio)
 
     async def handle_audio(self, audio_b64: str, mime: str) -> None:
         if not self._runtime.stt.available:
@@ -99,11 +113,11 @@ class Session:
 
         audio = await self._speak(reply)
         await self._emit(ServerReplyEnd(text=reply, speak=audio is None))
+        # When the browser speaks, it owns the return to idle: emitting it here
+        # would cancel the speaking animation before the voice starts.
+        await self._emit(ServerState(value="speaking"))
         if audio is not None:
-            await self._emit(ServerState(value="speaking"))
             await self._emit(audio)
-        else:
-            await self._emit(ServerState(value="idle"))
 
     async def _speak(self, reply: str) -> ServerAudio | None:
         if not self._runtime.tts.available:
@@ -125,7 +139,7 @@ class Session:
             {"role": "system", "content": self._runtime.settings.system_prompt}
         ]
         messages.extend(self._history)
-        return self._runtime.llm.stream(messages)
+        return self._runtime.llm.stream(messages, self._tools)
 
     def _append(self, role: str, content: str) -> None:
         self._history.append({"role": role, "content": content})

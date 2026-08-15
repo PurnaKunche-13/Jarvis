@@ -24,8 +24,8 @@ _ARITHMETIC: dict[type[ast.operator], Callable[[float, float], float]] = {
 }
 
 HELP_TEXT = (
-    "I can tell you the time or date, do arithmetic, and hold a conversation. "
-    "Set JARVIS_API_KEY to give me a full language model."
+    "I can tell you the time or date, do arithmetic, set timers, search the web "
+    "and report this machine's status. Set JARVIS_API_KEY to give me a full language model."
 )
 
 NO_MODEL_TEXT = (

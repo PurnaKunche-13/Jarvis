@@ -64,6 +64,15 @@ class ServerAudio(BaseModel):
     mime: str = "audio/mpeg"
 
 
+class ServerNotice(BaseModel):
+    """Unsolicited message, e.g. a timer that just elapsed."""
+
+    type: Literal["notice"] = "notice"
+    text: str
+    kind: Literal["timer"] = "timer"
+    speak: bool = True
+
+
 class ServerError(BaseModel):
     type: Literal["error"] = "error"
     message: str
@@ -81,6 +90,7 @@ class RuntimeConfig(BaseModel):
     server_tts: bool
     server_stt: bool
     chat_model: str
+    tools: list[str] = Field(default_factory=list)
 
 
 class ServerHello(BaseModel):

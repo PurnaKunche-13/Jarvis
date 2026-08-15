@@ -70,8 +70,9 @@ export class AudioBus {
     this.player.src = `data:${mime};base64,${base64}`;
     if (!this.playbackSource) {
       this.playbackSource = context.createMediaElementSource(this.player);
+      // The analyser is a tap only: routing it to the speakers would echo the microphone.
       this.playbackSource.connect(this.analyser!);
-      this.analyser!.connect(context.destination);
+      this.playbackSource.connect(context.destination);
     }
     this.startMeter();
     await this.player.play();

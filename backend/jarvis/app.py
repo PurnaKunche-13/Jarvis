@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -53,9 +54,10 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        # Credentials plus a wildcard origin would let any site read the API.
+        allow_credentials=not settings.open_cors,
+        allow_methods=["GET", "POST"],
+        allow_headers=["content-type"],
     )
 
     @app.get("/healthz")
@@ -69,13 +71,22 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket(socket: WebSocket) -> None:
-        await socket.accept()
         runtime: Runtime = app.state.runtime
+        # Websocket handshakes skip the CORS middleware, so any page could drive
+        # this socket (and spend the operator's API key) without this check.
+        if not runtime.settings.origin_allowed(socket.headers.get("origin")):
+            await socket.close(code=1008)
+            return
+        await socket.accept()
         session = Session(runtime, lambda message: socket.send_json(_dump(message)))
         await socket.send_json(_dump(ServerHello(config=runtime.describe())))
         try:
             while True:
-                raw = await socket.receive_json()
+                try:
+                    raw = await socket.receive_json()
+                except json.JSONDecodeError:
+                    await socket.send_json(_dump(ServerError(message="Malformed frame.")))
+                    continue
                 try:
                     message = _client_message.validate_python(raw)
                 except ValidationError:
@@ -84,6 +95,8 @@ def create_app() -> FastAPI:
                 await _dispatch(session, socket, message)
         except WebSocketDisconnect:
             logger.debug("client disconnected")
+        finally:
+            await session.aclose()
 
     return app
 

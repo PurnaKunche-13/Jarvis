@@ -3,11 +3,14 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncIterator, Sequence
 
+import httpx
+
 from jarvis.config import Settings
 from jarvis.providers.base import ChatMessage
 from jarvis.providers.local import LocalLLM, UnavailableSTT, UnavailableTTS
 from jarvis.registry import Runtime
 from jarvis.session import Session
+from jarvis.tools import ToolBox
 
 
 class ScriptedSTT:
@@ -39,7 +42,9 @@ class ScriptedLLM:
         self.reply = reply
         self.seen: list[Sequence[ChatMessage]] = []
 
-    async def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: Sequence[ChatMessage], tools: ToolBox | None = None
+    ) -> AsyncIterator[str]:
         self.seen.append(list(messages))
         for part in self.reply.split(" "):
             yield part + " "
@@ -53,6 +58,7 @@ def make_runtime(**overrides: object) -> tuple[Runtime, list[dict]]:
         stt=overrides.get("stt", UnavailableSTT()),
         tts=overrides.get("tts", UnavailableTTS()),
         client=None,
+        web_client=httpx.AsyncClient(),
     )
     return runtime, []
 
@@ -76,7 +82,8 @@ async def test_text_turn_streams_tokens_and_defers_speech_to_browser() -> None:
     end = next(event for event in sink if event["type"] == "reply_end")
     assert end["text"] == "At your service"
     assert end["speak"] is True
-    assert sink[-1] == {"type": "state", "value": "idle"}
+    # The browser is speaking, so the server must not knock the state back to idle.
+    assert sink[-1] == {"type": "state", "value": "speaking"}
     assert [m["role"] for m in session.history] == ["user", "assistant"]
 
 
@@ -137,3 +144,35 @@ async def test_history_is_trimmed_to_configured_turns() -> None:
 
     session.reset()
     assert session.history == []
+
+
+async def test_local_brain_routes_a_timer_command_through_the_tools() -> None:
+    runtime, sink = make_runtime()
+    session = Session(runtime, collector(sink))
+
+    await session.handle_text("set a tea timer for 30 minutes")
+
+    end = next(event for event in sink if event["type"] == "reply_end")
+    assert "tea timer" in end["text"] and "30 minutes" in end["text"]
+
+    await session.handle_text("what timers are running")
+    ends = [event for event in sink if event["type"] == "reply_end"]
+    assert "tea timer" in ends[-1]["text"]
+
+    await session.aclose()
+
+
+async def test_a_fired_timer_notifies_the_client_and_asks_it_to_speak() -> None:
+    runtime, sink = make_runtime()
+    session = Session(runtime, collector(sink))
+
+    await session.notify("Your tea timer is up.")
+
+    notice = next(event for event in sink if event["type"] == "notice")
+    assert notice == {
+        "type": "notice",
+        "text": "Your tea timer is up.",
+        "kind": "timer",
+        "speak": True,
+    }
+    assert sink[-1] == {"type": "state", "value": "speaking"}
