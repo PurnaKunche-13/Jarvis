@@ -8,7 +8,8 @@ from collections.abc import AsyncIterator, Sequence
 import httpx
 
 from ..config import Settings
-from .base import ChatMessage, ProviderError
+from ..tools import ToolBox
+from .base import ChatMessage, ProviderError, ToolCall, ToolCallFunction, ToolChatMessage
 
 
 class OpenAICompatLLM:
@@ -18,13 +19,48 @@ class OpenAICompatLLM:
         self._settings = settings
         self._client = client
 
-    async def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
-        payload = {
+    async def stream(
+        self, messages: Sequence[ChatMessage], tools: ToolBox | None = None
+    ) -> AsyncIterator[str]:
+        """Stream a reply, running any tools the model asks for before it answers."""
+        turn: list[ChatMessage] = list(messages)
+        rounds = max(1, self._settings.max_tool_rounds)
+        for _ in range(rounds):
+            content = ""
+            calls: list[ToolCall] = []
+            async for event in self._round(turn, tools):
+                if isinstance(event, str):
+                    content += event
+                    yield event
+                else:
+                    calls = event
+            if not calls or tools is None:
+                return
+            turn.append(_assistant_call(content, calls))
+            for call in calls:
+                function = call["function"]
+                result = await tools.invoke_json(function["name"], function["arguments"])
+                reply: ToolChatMessage = {
+                    "role": "tool",
+                    "content": result,
+                    "tool_call_id": call["id"],
+                }
+                turn.append(reply)
+
+    async def _round(
+        self, messages: Sequence[ChatMessage], tools: ToolBox | None
+    ) -> AsyncIterator[str | list[ToolCall]]:
+        """Yield content fragments, then finally the tool calls the model requested."""
+        payload: dict[str, object] = {
             "model": self._settings.chat_model,
             "messages": list(messages),
             "stream": True,
             "temperature": 0.6,
         }
+        if tools is not None and len(tools):
+            payload["tools"] = tools.specs()
+            payload["tool_choice"] = "auto"
+        pending: dict[int, ToolCall] = {}
         try:
             async with self._client.stream(
                 "POST", "/chat/completions", json=payload
@@ -40,24 +76,66 @@ class OpenAICompatLLM:
                     data = line[5:].strip()
                     if not data or data == "[DONE]":
                         continue
-                    fragment = _delta_of(data)
-                    if fragment:
-                        yield fragment
+                    delta = _delta_of(data)
+                    if delta is None:
+                        continue
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        yield content
+                    _merge_tool_calls(pending, delta.get("tool_calls"))
         except httpx.HTTPError as exc:  # pragma: no cover - network failure path
             raise ProviderError(f"chat completion transport error: {exc}") from exc
+        yield [pending[index] for index in sorted(pending)]
 
 
-def _delta_of(data: str) -> str:
+def _delta_of(data: str) -> dict[str, object] | None:
     try:
         chunk = json.loads(data)
     except json.JSONDecodeError:
-        return ""
-    choices = chunk.get("choices") or []
-    if not choices:
-        return ""
-    delta = choices[0].get("delta") or {}
-    content = delta.get("content")
-    return content if isinstance(content, str) else ""
+        return None
+    if not isinstance(chunk, dict):
+        return None
+    choices = chunk.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    delta = first.get("delta") if isinstance(first, dict) else None
+    return delta if isinstance(delta, dict) else None
+
+
+def _merge_tool_calls(pending: dict[int, ToolCall], raw: object) -> None:
+    """Streamed tool calls arrive as fragments keyed by index; stitch them together."""
+    if not isinstance(raw, list):
+        return
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("index")
+        index = int(index) if isinstance(index, int) else len(pending)
+        call = pending.setdefault(
+            index,
+            ToolCall(
+                id=f"call_{index}",
+                type="function",
+                function=ToolCallFunction(name="", arguments=""),
+            ),
+        )
+        identifier = entry.get("id")
+        if isinstance(identifier, str) and identifier:
+            call["id"] = identifier
+        function = entry.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            call["function"]["name"] += name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            call["function"]["arguments"] += arguments
+
+
+def _assistant_call(content: str, calls: list[ToolCall]) -> ToolChatMessage:
+    return {"role": "assistant", "content": content, "tool_calls": calls}
 
 
 class OpenAICompatSTT:

@@ -6,6 +6,7 @@ export interface RuntimeConfig {
   server_tts: boolean;
   server_stt: boolean;
   chat_model: string;
+  tools: string[];
 }
 
 export type ServerMessage =
@@ -15,6 +16,7 @@ export type ServerMessage =
   | { type: 'token'; text: string }
   | { type: 'reply_end'; text: string; speak: boolean }
   | { type: 'audio'; audio: string; mime: string }
+  | { type: 'notice'; text: string; kind: 'timer'; speak: boolean }
   | { type: 'error'; message: string }
   | { type: 'pong' };
 

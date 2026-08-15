@@ -8,7 +8,14 @@ from dataclasses import dataclass, field
 DEFAULT_SYSTEM_PROMPT = (
     "You are JARVIS, a concise, unflappable assistant. "
     "Answer in one or two sentences unless asked for detail. "
-    "Never mention that you are an AI language model."
+    "Never mention that you are an AI language model. "
+    "You have tools for timers, host telemetry and web search: use web_search whenever "
+    "the answer depends on current information, and answer from tool results only."
+)
+
+DEFAULT_SEARCH_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0 Safari/537.36"
 )
 
 
@@ -59,10 +66,33 @@ class Settings:
     )
     server_tts: bool = field(default_factory=lambda: _env_bool("JARVIS_SERVER_TTS", True))
 
+    # Web search. Without a key Jarvis scrapes DuckDuckGo's HTML endpoint;
+    # JARVIS_SEARCH_API_KEY switches to the Brave Search API.
+    search_api_key: str | None = field(default_factory=lambda: os.getenv("JARVIS_SEARCH_API_KEY"))
+    search_user_agent: str = field(
+        default_factory=lambda: os.getenv("JARVIS_SEARCH_USER_AGENT", DEFAULT_SEARCH_USER_AGENT)
+    )
+    max_tool_rounds: int = field(
+        default_factory=lambda: int(os.getenv("JARVIS_MAX_TOOL_ROUNDS", "3"))
+    )
+
     @property
     def cloud_enabled(self) -> bool:
         """True when a remote OpenAI-compatible endpoint can be reached."""
         return bool(self.api_key)
+
+    @property
+    def open_cors(self) -> bool:
+        """True when the origin allowlist is a wildcard, so credentials must be refused."""
+        return "*" in self.cors_origins
+
+    def origin_allowed(self, origin: str | None) -> bool:
+        """Websocket handshakes bypass CORS middleware, so the socket checks Origin itself."""
+        if origin is None:  # non-browser client (CLI, tests): nothing to spoof.
+            return True
+        return self.open_cors or origin.rstrip("/") in {
+            allowed.rstrip("/") for allowed in self.cors_origins
+        }
 
 
 def load_settings() -> Settings:

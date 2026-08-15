@@ -6,14 +6,15 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 
 from ..skills import answer_locally
+from ..tools import ToolBox, match_intent
 from .base import ChatMessage
 
 
 class LocalLLM:
     """Rule-based fallback brain.
 
-    It handles the built-in skills (clock, arithmetic, small talk) and otherwise
-    explains how to plug a real model in.
+    It handles the built-in skills (clock, arithmetic, small talk), routes known
+    phrasings to the tools, and otherwise explains how to plug a real model in.
     """
 
     name = "local-rules"
@@ -21,16 +22,27 @@ class LocalLLM:
     def __init__(self, chunk_delay: float = 0.012) -> None:
         self._chunk_delay = chunk_delay
 
-    async def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: Sequence[ChatMessage], tools: ToolBox | None = None
+    ) -> AsyncIterator[str]:
         prompt = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user"),
             "",
         )
-        reply = answer_locally(prompt)
+        reply = await self._answer(prompt, tools)
         for word in reply.split(" "):
             yield word + " "
             if self._chunk_delay:
                 await asyncio.sleep(self._chunk_delay)
+
+    async def _answer(self, prompt: str, tools: ToolBox | None) -> str:
+        if tools is not None:
+            intent = match_intent(prompt)
+            if intent is not None:
+                name, arguments = intent
+                if name in tools:
+                    return await tools.invoke(name, arguments)
+        return answer_locally(prompt)
 
 
 class UnavailableSTT:

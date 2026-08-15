@@ -56,6 +56,8 @@ export function useJarvis(signals: HologramSignals): Jarvis {
   const dictationRef = useRef<Dictation | null>(null);
   const streamingIdRef = useRef<number | null>(null);
   const configRef = useRef<RuntimeConfig | null>(null);
+  const wakeWordRef = useRef(wakeWordRequired);
+  wakeWordRef.current = wakeWordRequired;
 
   const setState = useCallback(
     (value: AssistantState) => {
@@ -69,6 +71,16 @@ export function useJarvis(signals: HologramSignals): Jarvis {
     if (!listening) return 'off';
     return config?.server_stt && pickRecorderMime() ? 'push-to-talk' : 'hands-free';
   }, [config?.server_stt, listening]);
+
+  const speakInBrowser = useCallback(
+    (text: string) => {
+      setState('speaking');
+      void speak(text, (level) => {
+        signals.level = level;
+      }).then(() => setState('idle'));
+    },
+    [setState, signals],
+  );
 
   const appendToken = useCallback((text: string) => {
     signals.activity = Math.min(signals.activity + 0.35, 1);
@@ -115,16 +127,21 @@ export function useJarvis(signals: HologramSignals): Jarvis {
               turn.id === id ? { ...turn, text: message.text, streaming: false } : turn,
             ),
           );
-          if (message.speak) {
-            setState('speaking');
-            void speak(message.text, (level) => {
-              signals.level = level;
-            }).then(() => setState('idle'));
-          }
+          if (message.speak) speakInBrowser(message.text);
           break;
         }
+        case 'notice':
+          setTurns((current) => [
+            ...current,
+            { id: nextTurnId++, role: 'jarvis', text: message.text },
+          ]);
+          if (message.speak) speakInBrowser(message.text);
+          break;
         case 'audio':
-          void audioRef.current?.play(message.audio, message.mime).then(() => setState('idle'));
+          void audioRef.current
+            ?.play(message.audio, message.mime)
+            .catch(() => setError('Playback was blocked; click the hologram and retry.'))
+            .finally(() => setState('idle'));
           break;
         case 'error':
           setError(message.message);
@@ -133,7 +150,7 @@ export function useJarvis(signals: HologramSignals): Jarvis {
           break;
       }
     },
-    [appendToken, setState, signals],
+    [appendToken, setState, speakInBrowser],
   );
 
   useEffect(() => {
@@ -177,7 +194,7 @@ export function useJarvis(signals: HologramSignals): Jarvis {
       onInterim: setInterim,
       onFinal: (text) => {
         const wakeWord = configRef.current?.wake_word ?? 'jarvis';
-        if (wakeWordRequired) {
+        if (wakeWordRef.current) {
           const command = afterWakeWord(text, wakeWord);
           if (command === null) return;
           if (!command) {
@@ -194,7 +211,7 @@ export function useJarvis(signals: HologramSignals): Jarvis {
     });
     dictationRef.current = dictation;
     return dictation.start();
-  }, [setState, submit, wakeWordRequired]);
+  }, [setState, submit]);
 
   const toggleListening = useCallback(() => {
     const audio = audioRef.current;

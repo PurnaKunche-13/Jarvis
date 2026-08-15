@@ -44,11 +44,28 @@ Everything is environment driven; nothing is required.
 | `JARVIS_WAKE_WORD` | `jarvis` | Wake word the UI listens for. |
 | `JARVIS_SYSTEM_PROMPT` | terse JARVIS persona | Personality. |
 | `JARVIS_HISTORY_TURNS` | `12` | Conversation turns kept in context. |
-| `JARVIS_CORS_ORIGINS` | `http://localhost:5173,…` | Allowed browser origins. |
+| `JARVIS_CORS_ORIGINS` | `http://localhost:5173,…` | Allowed browser origins (also checked on the websocket handshake). |
+| `JARVIS_SEARCH_API_KEY` | – | Brave Search key. Without it `web_search` scrapes DuckDuckGo's HTML endpoint. |
+| `JARVIS_MAX_TOOL_ROUNDS` | `3` | Cap on tool-call round trips per reply. |
 
 The client discovers which capabilities exist at connect time (`hello` frame) and
 adapts: server transcription when available, otherwise the Web Speech API;
 server voice when available, otherwise `speechSynthesis`.
+
+## Skills and tools
+
+The same tools are available to both brains: the cloud model gets them as
+function specs, and the offline rule engine reaches them through phrase matching
+(`set a timer for 5 minutes`, `what timers are running`, `cancel timer 2`,
+`system status`, `search the web for …`).
+
+| Tool | Notes |
+| --- | --- |
+| `set_timer` / `list_timers` / `cancel_timer` | Per-connection countdowns (max 16, max 24h). When one elapses the server pushes a `notice` frame and JARVIS speaks it unprompted. |
+| `system_info` | Platform, CPUs, load, memory, disk, uptime — read from the standard library only, never the environment. |
+| `web_search` | Brave Search when `JARVIS_SEARCH_API_KEY` is set, otherwise DuckDuckGo's no-key HTML endpoint. Runs on an unauthenticated HTTP client so the LLM key is never sent to a search host. |
+
+Timers belong to the websocket session, so closing the tab cancels them.
 
 ## How the hologram stays smooth
 
@@ -79,11 +96,12 @@ One websocket at `/ws`, JSON frames both ways.
 
 | Client | Server |
 | --- | --- |
-| `user_text`, `user_audio`, `cancel`, `reset`, `ping` | `hello`, `state`, `transcript`, `token`, `reply_end`, `audio`, `error`, `pong` |
+| `user_text`, `user_audio`, `cancel`, `reset`, `ping` | `hello`, `state`, `transcript`, `token`, `reply_end`, `audio`, `notice`, `error`, `pong` |
 
 `state` drives the hologram's colour and turbulence
 (`idle`/`listening`/`thinking`/`speaking`); `token` frames stream the reply as it
-is generated.
+is generated. `notice` frames are unsolicited (a fired timer) and carry `speak`,
+which is `false` when server audio follows.
 
 ## Development
 
