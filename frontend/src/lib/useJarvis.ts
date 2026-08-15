@@ -82,11 +82,11 @@ export function useJarvis(signals: HologramSignals): Jarvis {
     [setState, signals],
   );
 
-  const appendToken = useCallback((text: string) => {
+  // The id is passed in, not read from the ref: React batches these updaters, and
+  // reply_end clears the ref before they run, which used to drop short replies.
+  const appendToken = useCallback((id: number, text: string) => {
     signals.activity = Math.min(signals.activity + 0.35, 1);
     setTurns((current) => {
-      const id = streamingIdRef.current;
-      if (id === null) return current;
       const index = current.findIndex((turn) => turn.id === id);
       if (index === -1) {
         return [...current, { id, role: 'jarvis', text, streaming: true }];
@@ -115,17 +115,20 @@ export function useJarvis(signals: HologramSignals): Jarvis {
             { id: nextTurnId++, role: 'user', text: message.text },
           ]);
           break;
-        case 'token':
+        case 'token': {
           if (streamingIdRef.current === null) streamingIdRef.current = nextTurnId++;
-          appendToken(message.text);
+          appendToken(streamingIdRef.current, message.text);
           break;
+        }
         case 'reply_end': {
-          const id = streamingIdRef.current;
+          const id = streamingIdRef.current ?? nextTurnId++;
           streamingIdRef.current = null;
           setTurns((current) =>
-            current.map((turn) =>
-              turn.id === id ? { ...turn, text: message.text, streaming: false } : turn,
-            ),
+            current.some((turn) => turn.id === id)
+              ? current.map((turn) =>
+                  turn.id === id ? { ...turn, text: message.text, streaming: false } : turn,
+                )
+              : [...current, { id, role: 'jarvis', text: message.text }],
           );
           if (message.speak) speakInBrowser(message.text);
           break;
